@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { Helmet } from 'react-helmet';
@@ -14,15 +14,17 @@ const ChatPage = () => {
 
   const [selectedUser, setSelectedUser] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [unreadCounts, setUnreadCounts] = useState({}); // { userId: count }
+  const [unreadCounts, setUnreadCounts] = useState({});
+  const [totalUnread, setTotalUnread] = useState(0);
 
-  // Setup socket + kiểm tra login
+  // ✅ audio ref để phát âm thanh
+  const notificationSound = useRef(null);
+
   useEffect(() => {
     if (!user) {
       navigate('/login');
       return;
     }
-
     socket.emit('setup', user);
 
     return () => {
@@ -31,7 +33,25 @@ const ChatPage = () => {
     };
   }, []);
 
-  // Realtime: nhận tin nhắn
+  useEffect(() => {
+    const total = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
+    setTotalUnread(total);
+  }, [unreadCounts]);
+
+  useEffect(() => {
+    const defaultTitle = 'Chat App';
+    const updateTitle = () => {
+      document.title =
+        totalUnread > 0 ? `(${totalUnread}) ${defaultTitle}` : defaultTitle;
+    };
+    updateTitle();
+    document.addEventListener('visibilitychange', updateTitle);
+    return () => {
+      document.removeEventListener('visibilitychange', updateTitle);
+    };
+  }, [totalUnread]);
+
+  // Nhận tin nhắn realtime
   useEffect(() => {
     const handleNewMessage = (msg) => {
       const isForCurrentChat =
@@ -44,6 +64,11 @@ const ChatPage = () => {
           const isDuplicate = prev.some((m) => m._id === msg._id);
           return isDuplicate ? prev : [...prev, msg];
         });
+      } else {
+        // 🔔 Bíp khi có tin nhắn từ người khác
+        if (notificationSound.current) {
+          notificationSound.current.play().catch(() => {});
+        }
       }
     };
 
@@ -51,15 +76,18 @@ const ChatPage = () => {
     return () => socket.off('receiveMessage', handleNewMessage);
   }, [selectedUser, user]);
 
-  // Realtime: nhận notification khi có tin nhắn mới
+  // Nhận notification
   useEffect(() => {
     const handleNotification = (notif) => {
-      // Nếu không phải đang chat với người gửi => tăng số lượng chưa đọc
       if (!selectedUser || notif.from !== selectedUser._id) {
         setUnreadCounts((prev) => ({
           ...prev,
           [notif.from]: (prev[notif.from] || 0) + 1,
         }));
+        // 🔔 Bíp khi có notification từ người khác
+        if (notificationSound.current) {
+          notificationSound.current.play().catch(() => {});
+        }
       }
     };
 
@@ -67,17 +95,13 @@ const ChatPage = () => {
     return () => socket.off('notification', handleNotification);
   }, [selectedUser]);
 
-  // Lấy lịch sử tin nhắn
   const fetchMessages = useCallback(async () => {
     if (!selectedUser) return;
-
     try {
       const res = await axios.get(
         `${CHAT_SERVICE_URL}/api/messages?senderId=${user._id}&receiverId=${selectedUser._id}`
       );
       setMessages(res.data);
-
-      // reset số chưa đọc của user này
       setUnreadCounts((prev) => ({
         ...prev,
         [selectedUser._id]: 0,
@@ -91,22 +115,13 @@ const ChatPage = () => {
     if (selectedUser) fetchMessages();
   }, [selectedUser, fetchMessages]);
 
-  // Gửi tin nhắn
-  const sendMessage = async (content) => {
+  const sendMessage = (content) => {
     if (!content.trim()) return;
-
-    try {
-      const res = await axios.post(`${CHAT_SERVICE_URL}/api/messages`, {
-        senderId: user._id,
-        receiverId: selectedUser._id,
-        content,
-      });
-
-      socket.emit('sendMessage', res.data);
-      setMessages((prev) => [...prev, res.data]);
-    } catch (err) {
-      console.error('❌ Failed to send message:', err);
-    }
+    socket.emit('sendMessage', {
+      senderId: user._id,
+      receiverId: selectedUser._id,
+      content,
+    });
   };
 
   const handleLogout = () => {
@@ -114,15 +129,14 @@ const ChatPage = () => {
     navigate('/login');
   };
 
-  // Tính tổng tin chưa đọc
-  const totalUnread = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
-  const pageTitle = totalUnread > 0 ? `(${totalUnread}) Chat App` : 'Chat App';
-
   return (
     <>
       <Helmet>
-        <title>{pageTitle}</title>
+        <title>{totalUnread > 0 ? `(${totalUnread}) Chat App` : 'Chat App'}</title>
       </Helmet>
+
+      {/* 🔊 Thẻ audio ẩn */}
+      <audio ref={notificationSound} src="/sounds/notifications.wav" preload="auto" />
 
       <div style={{ display: 'flex', height: '100vh', position: 'relative' }}>
         <UserList
